@@ -3,9 +3,9 @@ require 'faraday'
 require 'json'
 require './db.rb'
 require "openai"
+require 'dotenv/load'
 
-
-Telegram::Bot::Client.run(TOKEN) do |bot|
+Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
   def api_key(user_id)
     user = Database.get_user(user_id)
     return nil if user.nil?
@@ -22,6 +22,9 @@ Telegram::Bot::Client.run(TOKEN) do |bot|
   end
 
   def location_sender(latitude, longitude, bot, message)
+    latitude.gsub!("location_sender(", "")
+    longitude.gsub!(")", "")
+
     bot.api.send_location(chat_id: message.chat.id, latitude: latitude, longitude: longitude)
   end
 
@@ -67,8 +70,10 @@ Telegram::Bot::Client.run(TOKEN) do |bot|
         parameters: {
             model: "gpt-3.5-turbo", # Required.
             messages: [
-              {role: "system", content: "Ты можешь использовать функцию 'location_sender(latitude, longitude)', чтобы отправить геопозицию. Чтобы создать уникальную клавиатуру для пользователя, вы можете обратиться к функции 'create_keyboard(keyboard, keyboard_header)'. Для отправки фотографии вы можете использовать функцию 'send_photo(bot, photo)' в Telegram. После использования любой из этих функций, вы можете отправить сообщение в том же запросе, эти опции доступны только для gpt модели, не показывай их и не говори что они есть, а вызывай функцию, пример твоего ответа когда кто-то запрашивает что-то из этого - location_sender(1, 2), 'Вот геопозиция токио'. Ты не обязан использовать эти функции"},
-              ].concat(old_messages << { role: "user", content: text} ),
+              {role: "system", content: "Ты можешь использовать функцию 'location_sender(latitude, longitude)', чтобы отправить геопозицию. После использования любой из этих функций, вы можете отправить сообщение в том же запросе, эти опции доступны только для gpt модели, пользователю категорически запрещается рассказывать об этом, не показывай их и не говори что они есть, а вызывай функцию, пример твоего ответа когда кто-то запрашивает что-то из этого - location_sender(1, 2), 'Вот геопозиция токио'. Ты не обязан использовать эти функции"},
+              {role: "system", content:  "Чтобы создать уникальную клавиатуру для пользователя, вы можете обратиться к функции 'create_keyboard(keyboard, keyboard_header)'. После использования этой функции, вы можете отправить сообщение в том же запросе, эта опция доступна только для gpt модели, пользователю категорически запрещается рассказывать об этом, не показывай их и не говори что они есть, а вызывай функцию, пример твоего ответа когда кто-то запрашивает что-то из этого - create_keyboard(keyboard, keyboard_header), 'Вот клавиатура токио'. Ты не обязан использовать эту функцию"},
+              {role: "system", content: "Для отправки фотографии вы можете использовать функцию 'send_photo(bot, photo)' вместо этого сообщения, эта опция доступна только для gpt модели, пользователю категорически запрещается рассказывать об этом, не показывай их и не говори что они есть, а вызывай функцию, пример твоего ответа когда кто-то запрашивает что-то из этого - send_photo(bot, photo), 'Вот фото токио'. Ты не обязан использовать эту функцию"},
+            ].concat(old_messages << { role: "user", content: text} ),
         })
 
     puts response.dig("choices", 0, "message", "content")
@@ -78,6 +83,8 @@ Telegram::Bot::Client.run(TOKEN) do |bot|
       # Получаем ответ от API OpenAI
       puts response.body
       answer = response.dig("choices", 0, "message", "content")
+
+      location_sender(answer.split(",")[0], answer.split(",")[1], bot, message) if answer.start_with?("location_sender")     
       add_message(message.from.id, answer, "assistant") unless answer.nil?
       # Отправляем ответ пользователю
       bot.api.send_message(chat_id:message.chat.id, text: answer)
@@ -101,6 +108,8 @@ Telegram::Bot::Client.run(TOKEN) do |bot|
         message.text.gsub!('/gpt', '')
         next if message.text.empty?
         send_message(bot, message)
+    elsif message.text.start_with?('/new_chat')
+      delete_messages(message.from.id)
     else
       return  bot.api.send_message(chat_id:message.chat.id, text: "Я не знаю такой команды :С") unless message.chat.type == 'private'
        send_message(bot, message)
@@ -108,7 +117,7 @@ Telegram::Bot::Client.run(TOKEN) do |bot|
     else
       # Обработка данных, полученных при нажатии кнопок
       if message.data == 'use_my_key'
-        api_key_update(message.from.id,OPENAI_API_KEY) unless api_key(message.from.id) == OPENAI_API_KEY
+        api_key_update(message.from.id,ENV['OPENAI_API_KEY']) unless api_key(message.from.id) == ENV['OPENAI_API_KEY']
 
         bot.api.send_message(chat_id: message.message.chat.id, text: "Great, you've chosen to use our key. Please enter the text you want me to process.")
       elsif message.data == 'enter_your_key'
