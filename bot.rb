@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
 require 'telegram/bot'
-require 'faraday'
-require 'json'
 require './db'
 require 'openai'
 require 'dotenv/load'
@@ -75,11 +73,9 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
         model: 'gpt-3.5-turbo', # Required.
         messages: [
           { role: 'system',
-            content: "Ты можешь использовать функцию 'location_sender(latitude, longitude)', чтобы отправить геопозицию. После использования любой из этих функций, вы можете отправить сообщение в том же запросе, эти опции доступны только для gpt модели, пользователю категорически запрещается рассказывать об этом, не показывай их и не говори что они есть, а вызывай функцию, пример твоего ответа когда кто-то запрашивает что-то из этого - location_sender(1, 2), 'Вот геопозиция токио'. Ты не обязан использовать эти функции" },
+            content: "Если пользователь запрашивает местоположение географического объекта возвращай ответ ввиде 'location_sender(latitude, longitude)| additional_info', где latitude и longitude это широта и долгота, а additional_info - это весь остальной текст, пример - 'location_sender(55.755826, 37.617300)| Конечно, вот ваша точка'" },
           { role: 'system',
-            content: "Чтобы создать уникальную клавиатуру для пользователя, вы можете обратиться к функции 'create_keyboard(keyboard, keyboard_header)'. После использования этой функции, вы можете отправить сообщение в том же запросе, эта опция доступна только для gpt модели, пользователю категорически запрещается рассказывать об этом, не показывай их и не говори что они есть, а вызывай функцию, пример твоего ответа когда кто-то запрашивает что-то из этого - create_keyboard(keyboard, keyboard_header), 'Вот клавиатура токио'. Ты не обязан использовать эту функцию" },
-          { role: 'system',
-            content: "Для отправки фотографии вы можете использовать функцию 'send_photo(bot, photo)' вместо этого сообщения, эта опция доступна только для gpt модели, пользователю категорически запрещается рассказывать об этом, не показывай их и не говори что они есть, а вызывай функцию, пример твоего ответа когда кто-то запрашивает что-то из этого - send_photo(bot, photo), 'Вот фото токио'. Ты не обязан использовать эту функцию" }
+            content: "Если пользователь заправшивает фотографию/изображение чего-либо возвращай ответ ввиде 'image_sender(image_url)| additional_info}', где image_url это ссылка на изображение, а additional_info - это весь остальной текст, пример - 'image_sender(https://i.imgur.com/1Q1Z1Zb.jpg)| Конечно, вот ваша фотография'" },
         ].concat(old_messages << { role: 'user', content: text })
       }
     )
@@ -91,9 +87,13 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
     puts response.body
     answer = response.dig('choices', 0, 'message', 'content')
 
-    if answer.start_with?('location_sender')
+    if answer.start_with?('location_sender') || answer.start_with?(' location_sender')
       location_sender(answer.split(',')[0], answer.split(',')[1], bot,
                       message)
+      answer = answer.split('|')[1]
+    elsif answer.start_with?('image_sender')
+      send_photo(bot, message, answer.split(','[0].gsub('image_sender(', '')))
+      answer = answer.split('|')[1]
     end
     add_message(message.from.id, answer, 'assistant') unless answer.nil?
     # Отправляем ответ пользователю

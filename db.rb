@@ -1,11 +1,10 @@
 # frozen_string_literal: true
 
 require 'pg'
-require 'byebug'
 require 'dotenv/load'
 
 class Database
-  @conn = PG.connect(dbname: ENV['DATABASE_NAME'], port: ENV['DATABASE_HOST'], host: ENV['DATABASE_PORT'],
+  @conn = PG.connect(dbname: ENV['DATABASE_NAME'], port: ENV['DATABASE_PORT'], host: ENV['DATABASE_HOST'],
                      password: ENV['DATABASE_PASSWORD'])
 
   @conn.exec("CREATE TABLE IF NOT EXISTS users (
