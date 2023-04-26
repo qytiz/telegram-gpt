@@ -89,7 +89,6 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
   def send_message(bot, message)
     return if api_key(message.from.id).nil?
 
-    byebug
     # Если сообщение для обработки уже было введено, отправляем запрос в API OpenAI
     delete_last_message(message.from.id) while check_amount_of_messages?(message.from.id)
 
@@ -215,10 +214,8 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
         bot.api.send_message(chat_id: message.message.chat.id, text: 'Sorry, but I don\'t understand you.')
       end
     elsif message.text.start_with?('/start')
-      byebug
       if message.text.gsub('/start ', '').empty? || message.text.gsub('/start', '').empty?
         if get_user(message.from.id).nil?
-          byebug
           kb = [[
             Telegram::Bot::Types::InlineKeyboardButton.new(text: 'Enter your key', callback_data: 'enter_your_key')
           ]]
