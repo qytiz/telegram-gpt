@@ -4,13 +4,17 @@ require 'telegram/bot'
 require './db'
 require 'openai'
 require 'dotenv/load'
+require 'redis'
+require 'byebug'
 
 Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
+  @redis = Redis.new
+
   def api_key(user_id)
     user = Database.get_user(user_id)
     return nil if user.nil?
 
-    user.values[0][2]
+    user.values[0][7]
   end
 
   def api_key_update(user_id, new_api_key)
@@ -55,9 +59,37 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
     messages_amount_result = Database.get_messages(user_id).count >= 10
   end
 
+  def create_invite_token(user_id)
+    Database.create_invite_token(user_id)
+  end
+
+  def check_invite_token(token)
+    Database.check_token(token).values.any?
+  end
+
+  def user_authorized?(user_id)
+    user = Database.get_user(user_id)
+    return false if user.nil? || Database.user_have_token?(user_id).values.empty? && user.values[0][7].nil?
+
+    true
+  end
+
+  def get_user(user_id)
+    Database.get_user(user_id)
+  end
+
+  def delete_messages(user_id)
+    Database.delete_messages(user_id)
+  end
+
+  def set_token_owner_and_status(token, user_id)
+    Database.set_token_owner_and_status(token, user_id)
+  end
+
   def send_message(bot, message)
     return if api_key(message.from.id).nil?
 
+    byebug
     # Если сообщение для обработки уже было введено, отправляем запрос в API OpenAI
     delete_last_message(message.from.id) while check_amount_of_messages?(message.from.id)
 
@@ -75,7 +107,7 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
           { role: 'system',
             content: "Если пользователь запрашивает местоположение географического объекта возвращай ответ ввиде 'location_sender(latitude, longitude)| additional_info', где latitude и longitude это широта и долгота, а additional_info - это весь остальной текст, пример - 'location_sender(55.755826, 37.617300)| Конечно, вот ваша точка'" },
           { role: 'system',
-            content: "Если пользователь заправшивает фотографию/изображение чего-либо возвращай ответ ввиде 'image_sender(image_url)| additional_info}', где image_url это ссылка на изображение, а additional_info - это весь остальной текст, пример - 'image_sender(https://i.imgur.com/1Q1Z1Zb.jpg)| Конечно, вот ваша фотография'" },
+            content: "Если пользователь заправшивает фотографию/изображение чего-либо возвращай ответ ввиде 'image_sender(image_url)| additional_info}', где image_url это ссылка на изображение, а additional_info - это весь остальной текст, пример - 'image_sender(https://i.imgur.com/1Q1Z1Zb.jpg)| Конечно, вот ваша фотография'" }
         ].concat(old_messages << { role: 'user', content: text })
       }
     )
@@ -100,6 +132,63 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
     bot.api.send_message(chat_id: message.chat.id, text: answer)
   end
 
+  def enter_user_key(bot, message)
+    # Проверяем введённый пользователем ключ
+    openai = OpenAI::Client.new(access_token: message.text)
+    response = openai.completions(
+      parameters: {
+        model: 'davinci',
+        prompt: 'Hello, I am a chatbot. How are you?',
+        max_tokens: 5
+      }
+    )
+    if response.body['error'].nil?
+      api_key_update(message.from.id, message.text)
+      bot.api.send_message(chat_id: message.chat.id, text: 'Your key is correct! Now you can use this bot.')
+      @redis.del(message.from.id)
+    else
+      bot.api.send_message(chat_id: message.chat.id,
+                           text: 'Your key is incorrect! Try again. You can get your key here: https://platform.openai.com/account/api-keys')
+    end
+  end
+
+  def increase_daily_usage(user_id)
+    # Увеличиваем количество использований бота на 1
+    Database.increase_daily_usage(user_id)
+  end
+
+  def create_invite_token(user_id)
+    # Создаём токен для приглашения
+    Database.create_token(user_id)
+  end
+
+  def add_user(user_id)
+    # Добавляем пользователя в базу данных
+    Database.add_user(user_id)
+  end
+
+  def daily_limit_exceeded?(user_id, bot)
+    # Проверяем, не превысил ли пользователь лимит использования бота в день
+    daily_limit = Database.get_daily_limit(user_id).values[0][0].to_i
+    daily_usage = Database.get_daily_usage(user_id).values[0][0].to_i
+
+    return true if daily_usage >= daily_limit
+
+    show_daily_limit_message(user_id, bot, daily_limit) if daily_usage >= daily_limit - 2
+
+    false
+  end
+
+  def get_daily_limit(user_id)
+    # Получаем лимит использования бота в день
+    Database.get_daily_limit(user_id).values[0][0].to_i
+  end
+
+  def show_daily_limit_message(user_id, bot, daily_limit)
+    bot.api.send_message(chat_id: user_id,
+                         text: "You have last request for today. You can use this bot #{daily_limit} times per day.")
+  end
+
   bot.listen do |message|
     puts message
     puts message.class
@@ -108,6 +197,11 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
     end
 
     if message.respond_to? :data
+      unless user_authorized?(message.from.id) || message.data == 'enter_your_key'
+        bot.api.send_message(chat_id: message.message.chat.id,
+                             text: 'Sory, but you are not authorized to use this bot.')
+        next
+      end
       # Обработка данных, полученных при нажатии кнопок
       if message.data == 'use_my_key'
         api_key_update(message.from.id, ENV['OPENAI_API_KEY']) unless api_key(message.from.id) == ENV['OPENAI_API_KEY']
@@ -116,29 +210,37 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
                              text: "Great, you've chosen to use our key. Please enter the text you want me to process.")
       elsif message.data == 'enter_your_key'
         bot.api.send_message(chat_id: message.message.chat.id, text: 'Please enter your OpenAI API key.')
-        # Сохраняем сообщение для обработки в следующем шаге
-        api_key = nil
-        message_to_process = message.text
+        @redis.set(message.from.id, 'enter_your_key')
       else
-        # Получаем ключ API пользователя из сообщения и сохраняем его в переменную
-        api_key_update(message.from.id, message.text)
-
-        # Отправляем запрос для проверки ключа API
-        response = Faraday.post('https://api.openai.com/v1/chat/gpt-3.5-turbo/completions', {},
-                                { 'Authorization': "Bearer #{api_key}" })
-
-        if response.status == 200
-          # Отправляем сообщение с просьбой ввести текст для обработки
-          bot.api.send_message(chat_id: message.message.chat.id,
-                               text: 'Great, your API key is valid! Please enter the text you want me to process.')
-        else
-          # Отправляем сообщение об ошибке, если ключ API недействителен
-          bot.api.send_message(chat_id: message.message.chat.id,
-                               text: 'Sorry, your API key is invalid. Please enter a valid key or use /mykey to use my key.')
-          next
-        end
+        bot.api.send_message(chat_id: message.message.chat.id, text: 'Sorry, but I don\'t understand you.')
       end
     elsif message.text.start_with?('/start')
+      byebug
+      if message.text.gsub('/start ', '').empty? || message.text.gsub('/start', '').empty?
+        if get_user(message.from.id).nil?
+          byebug
+          kb = [[
+            Telegram::Bot::Types::InlineKeyboardButton.new(text: 'Enter your key', callback_data: 'enter_your_key')
+          ]]
+          markup = Telegram::Bot::Types::InlineKeyboardMarkup.new(inline_keyboard: kb)
+          bot.api.send_message(chat_id: message.chat.id,
+                               text: 'To start using the bot, please enter your OpenAI API key. Or get invited to the beta test by someone who has already been invited.', reply_markup: markup)
+        else
+          bot.api.send_message(chat_id: message.chat.id,
+                               text: 'Welcome back! You can use /gpt in public chanels to start using the bot. Or send some text to me directly to start a conversation.')
+        end
+        next
+
+      elsif check_invite_token(message.text.gsub('/start ', ''))
+        bot.api.send_message(chat_id: message.chat.id,
+                             text: 'Great! You have been invited to the beta test. You will have 10 free tryes per day, have fun :).')
+        add_user(message.from.id)
+        set_token_owner_and_status(message.text.gsub('/start ', ''), message.from.id)
+      else
+        bot.api.send_message(chat_id: message.chat.id, text: 'Sorry, this invite code is invalid.')
+        next
+      end
+
       kb = [[
         Telegram::Bot::Types::InlineKeyboardButton.new(text: 'Use our key', callback_data: 'use_my_key'),
         Telegram::Bot::Types::InlineKeyboardButton.new(text: 'Enter your key', callback_data: 'enter_your_key')
@@ -148,19 +250,47 @@ Telegram::Bot::Client.run(ENV['TOKEN']) do |bot|
                            text: "Hello, I'm ChatGPT bot. Would you like to enter your OpenAI API key or use a free attempt with our key?", reply_markup: markup)
     # Отправляем сообщение с выбором ключа API
     elsif message.text.start_with?('/gpt')
+
       message.text.gsub!('/gpt', '')
+      enter_user_key(bot, message) if redis.get(message.from.id) == 'enter_your_key'
       next if message.text.empty?
 
       send_message(bot, message)
     elsif message.text.start_with?('/new_chat')
+      unless user_authorized?(message.from.id)
+        bot.api.send_message(chat_id: message.chat.id, text: 'Sory, but you are not authorized to use this bot.')
+        next
+      end
       delete_messages(message.from.id)
+    elsif message.text.start_with?('/invite')
+      bot.api.send_message(chat_id: message.chat.id,
+                           text: "Here is your invite link: #{ENV['BOT_URL']}?start=#{create_invite_token(message.from.id)}")
     else
+      if @redis.get(message.from.id) == 'enter_your_key'
+        enter_user_key(bot, message)
+        next
+      end
+
+      unless user_authorized?(message.from.id)
+        bot.api.send_message(chat_id: message.chat.id,
+                             text: 'Sory, but you are not authorized to use this bot. type /start to add your key. Or get invited to the beta test by someone who has already been invited.')
+        next
+      end
+
+      if daily_limit_exceeded?(message.from.id, bot)
+        bot.api.send_message(chat_id: message.chat.id,
+                             text: "Sorry, but you have reached your daily limit of #{get_daily_limit(message.from.id)} requests. You can get more requests by inviting your friends to the beta test.")
+        next
+      end
+
       unless message.chat.type == 'private'
-        return bot.api.send_message(chat_id: message.chat.id,
-                                    text: 'Я не знаю такой команды :С')
+        bot.api.send_message(chat_id: message.chat.id,
+                             text: 'Я не знаю такой команды :С')
       end
 
       send_message(bot, message)
+
+      increase_daily_usage(message.from.id)
     end
   end
 end

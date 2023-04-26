@@ -14,6 +14,7 @@ gem install 'openai'
 gem install 'dotenv/load'
 
 gem install 'pg'
+gem install 'redis'
 
 ```
 
